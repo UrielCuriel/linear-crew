@@ -1,0 +1,56 @@
+{
+  "name": "linear-crew",
+  "version": "0.1.0",
+  "description": "Local control plane and OpenCode plugin for durable AI agent crews",
+  "module": "./dist/opencode-plugin.js",
+  "main": "./dist/opencode-plugin.js",
+  "type": "module",
+  "bin": {
+    "linear-crew": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/opencode-plugin.js",
+      "default": "./dist/opencode-plugin.js"
+    },
+    "./plugin": {
+      "import": "./dist/opencode-plugin.js",
+      "default": "./dist/opencode-plugin.js"
+    },
+    "./server": {
+      "import": "./dist/opencode-plugin.js",
+      "default": "./dist/opencode-plugin.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.4.0",
+    "opencode": ">=1.18.0"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "serve": "bun run src/cli.ts serve",
+    "build": "bun run scripts/build.ts",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "@bunli/core": "^0.9.1",
+    "@opencode-ai/plugin": "^1.18.30",
+    "@opencode-ai/sdk": "^1.18.30",
+    "@opentui/core": "^0.5.11",
+    "bunli": "^0.9.1",
+    "elysia": "^2.0.0-beta.14",
+    "zod": "^4.3.6"
+  }
+}

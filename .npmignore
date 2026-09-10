@@ -1,0 +1,9 @@
+*
+
+!dist/
+!dist/*.js
+!dist/**/*.js
+!README.md
+
+dist/*.map
+dist/**/*.map

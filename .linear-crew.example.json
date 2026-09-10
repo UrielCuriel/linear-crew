@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "projectId": "replace-with-project-id",
+  "database": "linear-crew.sqlite",
+  "rootDirectory": "C:/absolute/path/to/project-root",
+  "topology": "multi-repo",
+  "contexts": [
+    {
+      "workspaceKey": "control",
+      "repositoryKey": "root",
+      "directory": ".",
+      "relationship": "root",
+      "inheritRootContext": false,
+      "requireLocalAgent": true
+    },
+    {
+      "workspaceKey": "api",
+      "repositoryKey": "api",
+      "directory": "api",
+      "relationship": "submodule",
+      "inheritRootContext": true,
+      "requireLocalAgent": true
+    }
+  ],
+  "opencode": {
+    "baseUrl": "http://127.0.0.1:4096"
+  }
+}
