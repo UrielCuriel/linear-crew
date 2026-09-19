@@ -3,15 +3,17 @@ import { ControlPlane, DomainError } from "../src/application/control-plane.ts";
 import { createHttpApp } from "../src/http/app.ts";
 import { SqliteStore } from "../src/infrastructure/sqlite-store.ts";
 import { assertSessionCanWrite, createLinearCrewTools } from "../src/integrations/opencode-plugin.ts";
-import { dashboardSnapshot } from "../src/tui/dashboard.ts";
+import { dashboardSnapshot } from "../src/tui/dashboard.tsx";
 import type { ToolContext } from "@opencode-ai/plugin";
 import { OpenCodeScheduler, type AgentRuntime, type RuntimeSession } from "../src/scheduler/opencode-scheduler.ts";
-import { resolveDirectory } from "../src/config/local-config.ts";
+import { resolveDirectory, resolveRuntimeSettings, type LocalConfig } from "../src/config/local-config.ts";
+import { startManagedOpenCodeServer } from "../src/runtime/managed-opencode-server.ts";
 
 class FakeAgentRuntime implements AgentRuntime {
   readonly sessions: RuntimeSession[] = [];
   readonly prompts: Array<{ sessionId: string; directory: string; prompt: string }> = [];
   readonly states: Record<string, "idle" | "busy" | "retry"> = {};
+  statusError = false;
 
   async create(input: Parameters<AgentRuntime["create"]>[0]): Promise<RuntimeSession> {
     const session = { id: `runtime-${this.sessions.length + 1}`, directory: input.directory };
@@ -26,6 +28,7 @@ class FakeAgentRuntime implements AgentRuntime {
   }
 
   async statuses(): Promise<Record<string, "idle" | "busy" | "retry">> {
+    if (this.statusError) throw new Error("Runtime unavailable");
     return { ...this.states };
   }
 
@@ -96,10 +99,16 @@ describe("control plane", () => {
     try {
       const backend = cp.startSession(project.id, { roleKey: "backend", agent: "opencode" });
       const qa = cp.startSession(project.id, { roleKey: "qa", agent: "opencode" });
-      const evidence = cp.attachEvidence(project.id, { workItemId: workItem.id, sessionId: backend.id, kind: "test", summary: "Integration test passes" });
+      const evidence = cp.attachEvidence(project.id, { workItemId: workItem.id, sessionId: backend.id, kind: "test", summary: "Integration test passes", reference: "bun test tests/endpoint.test.ts" });
+      const unusedEvidence = cp.attachEvidence(project.id, { workItemId: workItem.id, sessionId: backend.id, kind: "note", summary: "Unverified implementation note" });
       const delivery = cp.completeDelivery(project.id, { workItemId: workItem.id, sessionId: backend.id, evidenceIds: [evidence.id], summary: "Endpoint complete" });
       expect(() => cp.requestAcceptance(delivery.id, { reviewerSessionId: backend.id })).toThrow(DomainError);
       const review = cp.requestAcceptance(delivery.id, { reviewerSessionId: qa.id });
+      const reviewerContext = cp.contextForSession(project.id, qa.id);
+      expect(reviewerContext.acceptances).toContainEqual(review);
+      expect(reviewerContext.deliveries).toContainEqual(delivery);
+      expect(reviewerContext.evidence).toContainEqual(evidence);
+      expect(reviewerContext.evidence).not.toContainEqual(unusedEvidence);
       expect(cp.reviewAcceptance(review.id, { reviewerSessionId: qa.id, verdict: "accepted", rationale: "Contract and tests verified" }).status).toBe("accepted");
       expect(cp.listWorkItems(project.id)[0]?.status).toBe("done");
       expect(cp.events(project.id).some((event) => event.type === "delivery.accepted")).toBe(true);
@@ -160,7 +169,7 @@ test("HTTP adapter exposes the control plane", async () => {
 });
 
 test("OpenCode tools bind the runtime session and expose durable context", async () => {
-  const { store, cp, project } = setup();
+  const { store, cp, project, workspace } = setup();
   try {
     const tools = createLinearCrewTools(cp, { projectId: project.id, directory: "C:/project" });
     const context = {
@@ -178,9 +187,10 @@ test("OpenCode tools bind the runtime session and expose durable context", async
     expect(guideOutput).toContain("crew_request_lease");
     expect(guideOutput).toContain("backend");
     expect(guideOutput).toContain("C:/project/api");
-    const registered = await tools.crew_register_session!.execute({ roleKey: "backend" }, context);
+    const registered = await tools.crew_register_session!.execute({ roleKey: "backend", workspaceId: workspace.key }, context);
     expect(typeof registered === "string" ? registered : registered.output).toContain("opencode-session-1");
     const session = cp.listSessions(project.id)[0]!;
+    expect(session.workspaceId).toBe(workspace.id);
     cp.addContextNote(project.id, { sessionId: session.id, content: "Human clarification" });
     for (let index = 0; index < 25; index++) cp.addContextNote(project.id, { sessionId: session.id, kind: index === 24 ? "decision" : "context", content: `Relevant product note ${index}` });
     const unrelated = cp.startSession(project.id, { roleKey: "qa", agent: "opencode" });
@@ -251,9 +261,18 @@ test("scheduler starts a primary session in its configured context root and wake
     expect(runtime.prompts.at(-1)?.prompt).toContain("Use the versioned endpoint");
 
     delete runtime.states[started.session.runtimeSessionId!];
+    const omittedIdle = await scheduler.reconcile(project.id);
+    expect(omittedIdle.unknown).toBe(0);
+    expect(cp.listSessions(project.id).find((session) => session.id === started.session.id)?.status).toBe("waiting");
+
+    runtime.statusError = true;
     const unknown = await scheduler.reconcile(project.id);
-    expect(unknown.unknown).toBe(1);
+    expect(unknown.unknown).toBe(2);
     expect(cp.listSessions(project.id).find((session) => session.id === started.session.id)?.status).toBe("unknown");
+
+    runtime.statusError = false;
+    await scheduler.notifySession(started.session.id, "Recover the session");
+    expect(cp.listSessions(project.id).find((session) => session.id === started.session.id)?.status).toBe("active");
   } finally {
     store.close();
   }
@@ -332,6 +351,35 @@ test("scheduler runs a durable multi-role planning meeting with human input and 
 test("topology path resolution rejects context roots outside the configured project", () => {
   expect(resolveDirectory("C:/project", "api_v2")).toBe("C:/project/api_v2");
   expect(() => resolveDirectory("C:/project", "../other")).toThrow("escapes the project root");
+});
+
+test("runtime settings default to the local project binding", () => {
+  const config = {
+    schema: 1,
+    projectId: "project-from-config",
+    database: "state/crew.sqlite",
+    rootDirectory: "C:/project",
+    topology: "monorepo",
+    contexts: [],
+    opencode: { baseUrl: "http://localhost:4319" },
+  } satisfies LocalConfig;
+  expect(resolveRuntimeSettings("C:/different-cwd", {}, config)).toEqual({
+    projectId: "project-from-config",
+    database: "C:/project/state/crew.sqlite",
+    rootDirectory: "C:/project",
+    hostname: "localhost",
+    port: 4319,
+  });
+  expect(resolveRuntimeSettings("C:/different-cwd", { project: "override", port: 4320 }, config)).toMatchObject({ projectId: "override", port: 4320 });
+});
+
+test("managed runtime reports an occupied OpenCode port explicitly", async () => {
+  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  try {
+    await expect(startManagedOpenCodeServer({ hostname: "127.0.0.1", port: listener.port })).rejects.toThrow("already in use");
+  } finally {
+    listener.stop(true);
+  }
 });
 
 test("OpenCode write tools require an implementation delegation with an active lease", () => {

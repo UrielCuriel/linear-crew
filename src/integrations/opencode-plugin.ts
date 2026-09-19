@@ -109,14 +109,19 @@ export function createLinearCrewTools(controlPlane: ControlPlane, defaults: Tool
         ...projectArg,
         roleKey: tool.schema.string().min(1),
         coordinatorId: tool.schema.string().optional(),
-        workspaceId: tool.schema.string().optional(),
+        workspaceId: tool.schema.string().optional().describe("Workspace UUID or stable key"),
         delegationId: tool.schema.string().optional(),
       },
       async execute(args, context) {
         const project = projectId(args, defaults);
         const existing = controlPlane.listSessions(project).find((candidate) => candidate.runtimeSessionId === context.sessionID);
         if (existing) return json(existing, "Session already registered");
-        const inferredWorkspace = controlPlane.listWorkspaces(project).find((workspace) => {
+        const workspaces = controlPlane.listWorkspaces(project);
+        const requestedWorkspace = args.workspaceId
+          ? workspaces.find((workspace) => workspace.id === args.workspaceId || workspace.key === args.workspaceId)
+          : undefined;
+        if (args.workspaceId && !requestedWorkspace) throw new Error(`Workspace '${args.workspaceId}' does not exist in project '${project}'`);
+        const inferredWorkspace = workspaces.find((workspace) => {
           if (!defaults.rootDirectory) return false;
           const expected = `${defaults.rootDirectory.replace(/[\\/]$/, "")}/${workspace.path === "." ? "" : workspace.path}`.replaceAll("\\", "/").replace(/\/$/, "");
           return expected.toLowerCase() === context.directory.replaceAll("\\", "/").replace(/\/$/, "").toLowerCase();
@@ -125,7 +130,7 @@ export function createLinearCrewTools(controlPlane: ControlPlane, defaults: Tool
           roleKey: args.roleKey,
           agent: context.agent,
           coordinatorId: args.coordinatorId,
-          workspaceId: args.workspaceId ?? inferredWorkspace?.id,
+          workspaceId: requestedWorkspace?.id ?? inferredWorkspace?.id,
           delegationId: args.delegationId,
           runtimeSessionId: context.sessionID,
           actor: `opencode:${context.sessionID}`,

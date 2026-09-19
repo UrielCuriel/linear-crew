@@ -152,8 +152,20 @@ linear-crew scheduler --project <id> --root C:/projects/avance --opencode http:/
 Como alternativa recomendada, Linear Crew puede ser dueño del ciclo de vida del servidor y cerrarlo junto con el scheduler:
 
 ```bash
-linear-crew runtime --project <id> --root C:/projects/avance --hostname 127.0.0.1 --port 4096
+linear-crew runtime
 ```
+
+Ejecutado desde el root configurado, `runtime` obtiene `projectId`, database, root, hostname y port de `.linear-crew.json`. Los flags explícitos sobrescriben esos valores. Antes de iniciar OpenCode valida el proyecto y que el puerto esté libre; si ya existe un servidor en ese puerto, use otro `--port` o conecte el comando `scheduler` al servidor existente.
+
+El warning `OPENCODE_SERVER_PASSWORD is not set` es informativo y no detiene servidores enlazados a `127.0.0.1`, `localhost` o `::1`. Para exponer OpenCode fuera de loopback, Linear Crew exige autenticación:
+
+```powershell
+$env:OPENCODE_SERVER_USERNAME = "opencode"
+$env:OPENCODE_SERVER_PASSWORD = "<secret>"
+linear-crew runtime --hostname 0.0.0.0
+```
+
+El scheduler y el plugin generan automáticamente el header Basic Auth desde esas variables. Los demás clientes que se conecten a ese servidor también deben proporcionar las mismas credenciales.
 
 Las sesiones delegadas se crean sin `parentID` para que permanezcan como sesiones primarias visibles y reanudables. El scheduler siempre pasa el `directory` exacto del workspace, por lo que OpenCode carga la configuración, agentes, skills, LSP y MCP del subproyecto correspondiente.
 

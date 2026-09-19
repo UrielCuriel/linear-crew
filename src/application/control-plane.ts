@@ -100,7 +100,7 @@ export class ControlPlane {
         "Define roles with role-add, including allowed workspace keys, capabilities and optional provider/model selection.",
         "Add workflows when work requires ordered role transitions; simple work items can omit a workflow.",
         "Generate the local binding with: linear-crew opencode-configure --project <project-id>.",
-        "Run linear-crew runtime --project <project-id> from the configured root, or run an external OpenCode server plus the scheduler command.",
+        "From the configured root, run linear-crew runtime; project, database, root, hostname and port default to .linear-crew.json. Use an external OpenCode server plus scheduler when the configured port is already owned elsewhere.",
         "Use linear-crew tui --project <project-id> for monitoring and durable human decisions or constraints.",
       ],
       implementationFlow: [
@@ -658,6 +658,7 @@ export class ControlPlane {
     const allSessions = this.listSessions(projectId);
     const allWorkItems = this.listWorkItems(projectId);
     const allDelegations = this.listDelegations(projectId);
+    const allAcceptances = this.listAcceptances(projectId);
     const meetings = this.listMeetings(projectId).filter((meeting) =>
       meeting.status !== "completed" && meeting.status !== "cancelled" &&
       (meeting.facilitatorSessionId === session.id || meeting.participants.some((participant) => participant.sessionId === session.id)));
@@ -673,6 +674,7 @@ export class ControlPlane {
     const workItemIds = new Set<string>([
       ...delegations.map((delegation) => delegation.workItemId),
       ...meetings.flatMap((meeting) => meeting.workItemId ? [meeting.workItemId] : []),
+      ...allAcceptances.filter((acceptance) => acceptance.reviewerSessionId === session.id).map((acceptance) => acceptance.workItemId),
     ]);
     if (!session.delegationId && !session.meetingId) {
       for (const item of allWorkItems) if (item.status !== "done") workItemIds.add(item.id);
@@ -693,6 +695,8 @@ export class ControlPlane {
       note.sessionId === session.id || (note.workItemId && workItemIds.has(note.workItemId)) || (note.meetingId && meetingIds.has(note.meetingId)));
     const messages = this.listMessages(projectId, session.id);
     const contributionList = this.listMeetingContributions(projectId).filter((contribution) => activeMeetingIds.has(contribution.meetingId));
+    const deliveries = this.store.list<DeliveryRevision>("delivery", projectId).filter((delivery) => workItemIds.has(delivery.workItemId));
+    const evidenceIds = new Set(deliveries.flatMap((delivery) => delivery.evidenceIds));
     return {
       currentSession: session,
       workItems: allWorkItems.filter((item) => workItemIds.has(item.id)),
@@ -701,7 +705,9 @@ export class ControlPlane {
       activeLeases: this.listLeases(projectId).filter((lease) => delegations.some((delegation) => delegation.id === lease.delegationId) && (lease.status === "requested" || lease.status === "active")),
       handoffs: this.listHandoffs(projectId).filter((handoff) => (handoff.status === "offered" || handoff.status === "acknowledged") && (delegations.some((delegation) => delegation.id === handoff.delegationId) || handoff.fromSessionId === session.id || handoff.toRoleKey === session.roleKey)),
       interventions: this.listInterventions(projectId, "open").filter((intervention) => intervention.requesterSessionId === session.id || intervention.assignedSessionId === session.id || intervention.targetRoleKey === session.roleKey),
-      acceptances: this.listAcceptances(projectId).filter((acceptance) => workItemIds.has(acceptance.workItemId)),
+      deliveries,
+      evidence: this.store.list<Evidence>("evidence", projectId).filter((item) => evidenceIds.has(item.id)),
+      acceptances: allAcceptances.filter((acceptance) => workItemIds.has(acceptance.workItemId)),
       messages: messages.slice(-20),
       omittedMessages: Math.max(0, messages.length - 20),
       contextNotes: contextNotes.slice(-20),

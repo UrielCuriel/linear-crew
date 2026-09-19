@@ -203,6 +203,8 @@ Cada mutación escribe proyección y evento en una misma transacción. Este esqu
 - **Reunión como agregado durable**: sus rondas y contribuciones sobreviven al proceso y no dependen del transcript de una sola sesión.
 - **Participantes de solo lectura**: una sesión de reunión no puede modificar archivos; la implementación posterior requiere una delegación independiente y su lease.
 - **Servidor administrado opcional**: `runtime` es dueño de `createOpencodeServer`, usa su URL para el scheduler y llama `close()` al terminar; `scheduler` permanece disponible para servidores externos.
+- **Configuración local por defecto**: `runtime` resuelve proyecto, database, root, hostname y port desde `.linear-crew.json`; los flags son overrides y no requisitos.
+- **Seguridad del servidor**: loopback puede operar sin contraseña y el warning de OpenCode es informativo. Un bind no-loopback requiere `OPENCODE_SERVER_PASSWORD`; plugin y scheduler reutilizan esas credenciales mediante Basic Auth.
 - **Bundle Bun sin ejecutable nativo**: el CLI conserva un shebang Bun y se distribuye como JavaScript mediante `package.json#bin`; no se usa `--compile` para evitar políticas de autorización de binarios.
 - **Contexto de producto separado de operaciones**: el prompt por defecto excluye telemetría, historial no relacionado y entidades cerradas; las vistas completas son consultas explícitas y paginadas.
 - **Topología estática local, estado dinámico en SQLite**: `.linear-crew.json` declara modo, root y context roots; sesiones, leases y trabajo viven en la base.

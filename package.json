@@ -39,18 +39,21 @@
     "typecheck": "bunx tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/react": "^19.2.14"
   },
   "peerDependencies": {
     "typescript": "^7"
   },
   "dependencies": {
     "@bunli/core": "^0.9.1",
+    "@bunli/runtime": "^0.3.2",
+    "@bunli/tui": "^0.6.0",
     "@opencode-ai/plugin": "^1.18.30",
     "@opencode-ai/sdk": "^1.18.30",
-    "@opentui/core": "^0.5.11",
     "bunli": "^0.9.1",
     "elysia": "^2.0.0-beta.14",
+    "react": "^19.2.4",
     "zod": "^4.3.6"
   }
 }

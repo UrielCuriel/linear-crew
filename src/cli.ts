@@ -5,10 +5,24 @@ import { z } from "zod";
 import { ControlPlane } from "./application/control-plane.ts";
 import { createHttpApp } from "./http/app.ts";
 import { SqliteStore } from "./infrastructure/sqlite-store.ts";
+import { readLocalConfig, resolveDatabase, resolveRuntimeSettings } from "./config/local-config.ts";
+import { dashboardView } from "./tui/dashboard.tsx";
 
-const database = option(z.string().default(Bun.env.LINEAR_CREW_DB ?? "linear-crew.sqlite"), {
+const localConfig = await readLocalConfig(process.cwd());
+const configuredProjectId = localConfig?.projectId ?? Bun.env.LINEAR_CREW_PROJECT_ID;
+
+const database = option(z.string().default(Bun.env.LINEAR_CREW_DB ?? (localConfig ? resolveDatabase(localConfig) : "linear-crew.sqlite")), {
   short: "d",
-  description: "SQLite database file",
+  description: "SQLite database file; defaults to .linear-crew.json",
+});
+
+const project = option(configuredProjectId
+  ? z.string().min(1).default(configuredProjectId)
+  : z.string().min(1), { description: "Project id; defaults to .linear-crew.json" });
+
+const optionalDatabase = option(z.string().optional(), {
+  short: "d",
+  description: "SQLite database file; defaults to .linear-crew.json",
 });
 
 function print(value: unknown): void {
@@ -64,7 +78,7 @@ const guide = defineCommand({
   description: "Show the Linear Crew capabilities and implementation workflow configured for a project",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
   },
   handler: ({ flags }) => print(useControlPlane(flags.database, (cp) => cp.projectGuide(flags.project))),
 });
@@ -74,7 +88,7 @@ const roleAdd = defineCommand({
   description: "Add a role to a project",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
     key: option(z.string().min(1), { description: "Stable role key" }),
     name: option(z.string().min(1), { short: "n", description: "Role name" }),
     capabilities: option(z.string().default(""), { description: "Comma-separated capabilities" }),
@@ -100,7 +114,7 @@ const repositoryAdd = defineCommand({
   description: "Register a project repository",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
     key: option(z.string().min(1), { description: "Stable repository key" }),
     name: option(z.string().min(1), { short: "n", description: "Repository name" }),
     path: option(z.string().min(1), { description: "Repository path" }),
@@ -114,7 +128,7 @@ const workspaceAdd = defineCommand({
   description: "Register an OpenCode context root inside a repository",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
     repository: option(z.string().min(1), { description: "Repository id" }),
     key: option(z.string().min(1), { description: "Stable workspace key" }),
     name: option(z.string().min(1), { short: "n", description: "Workspace name" }),
@@ -133,7 +147,7 @@ const workAdd = defineCommand({
   description: "Create a work item with a durable outcome",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
     type: option(z.enum(["milestone", "epic", "issue", "task"]).default("issue"), { description: "Work item type" }),
     title: option(z.string().min(1), { short: "t", description: "Title" }),
     outcome: option(z.string().min(1), { short: "o", description: "Immutable outcome for this revision" }),
@@ -152,7 +166,7 @@ const status = defineCommand({
   description: "Show a project control plane snapshot",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
   },
   handler: ({ flags }) => print(useControlPlane(flags.database, (cp) => ({
     roles: cp.listRoles(flags.project),
@@ -172,17 +186,12 @@ const tui = defineCommand({
   description: "Open the live human monitoring dashboard",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
     refresh: option(z.coerce.number().int().min(250).default(1000), { description: "Refresh interval in milliseconds" }),
   },
-  handler: async ({ flags }) => {
-    const store = new SqliteStore(flags.database);
-    try {
-      const { runDashboard } = await import("./tui/dashboard.ts");
-      await runDashboard(new ControlPlane(store), flags.project, flags.refresh);
-    } finally {
-      store.close();
-    }
+  render: ({ flags }) => dashboardView(flags.database, flags.project, flags.refresh),
+  handler: () => {
+    throw new Error("The Linear Crew dashboard requires an interactive terminal");
   },
 });
 
@@ -191,7 +200,7 @@ const opencodeConfigure = defineCommand({
   description: "Write the local Linear Crew project binding used by the OpenCode plugin",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
   },
   handler: async ({ flags, cwd }) => {
     const path = `${cwd.replace(/[\\/]$/, "")}/.linear-crew.json`;
@@ -230,7 +239,7 @@ const scheduler = defineCommand({
   description: "Continuously reconcile OpenCode sessions and wake their coordinators",
   options: {
     database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    project,
     root: option(z.string().optional(), { description: "Project root directory" }),
     opencode: option(z.string().default("http://127.0.0.1:4096"), { description: "OpenCode server URL" }),
     interval: option(z.coerce.number().int().min(250).default(1000), { description: "Polling interval in milliseconds" }),
@@ -255,30 +264,36 @@ const runtime = defineCommand({
   name: "runtime",
   description: "Run a managed OpenCode server and continuously reconcile its Linear Crew sessions",
   options: {
-    database,
-    project: option(z.string().min(1), { description: "Project id" }),
+    database: optionalDatabase,
+    project: option(z.string().min(1).optional(), { description: "Project id; defaults to .linear-crew.json" }),
     root: option(z.string().optional(), { description: "Project root directory" }),
-    hostname: option(z.string().default("127.0.0.1"), { description: "OpenCode bind hostname" }),
-    port: option(z.coerce.number().int().min(1).max(65535).default(4096), { short: "p", description: "OpenCode server port" }),
+    hostname: option(z.string().optional(), { description: "OpenCode bind hostname; defaults to the configured baseUrl" }),
+    port: option(z.coerce.number().int().min(1).max(65535).optional(), { short: "p", description: "OpenCode server port; defaults to the configured baseUrl" }),
     interval: option(z.coerce.number().int().min(250).default(1000), { description: "Scheduler polling interval in milliseconds" }),
   },
   handler: async ({ flags, cwd, signal }) => {
-    const { createOpencodeServer } = await import("@opencode-ai/sdk/v2/server");
-    const server = await createOpencodeServer({ hostname: flags.hostname, port: flags.port, signal });
-    let store: SqliteStore | undefined;
+    const config = await readLocalConfig(cwd);
+    const settings = resolveRuntimeSettings(cwd, flags, config);
+    const store = new SqliteStore(settings.database);
     try {
-      store = new SqliteStore(flags.database);
+      const controlPlane = new ControlPlane(store);
+      controlPlane.getProject(settings.projectId);
+      const { startManagedOpenCodeServer } = await import("./runtime/managed-opencode-server.ts");
+      const server = await startManagedOpenCodeServer({ hostname: settings.hostname, port: settings.port, signal });
       const { OpenCodeScheduler, OpenCodeSdkRuntime } = await import("./scheduler/opencode-scheduler.ts");
-      const runner = new OpenCodeScheduler(new ControlPlane(store), new OpenCodeSdkRuntime(server.url), flags.root ?? cwd);
-      print({ status: "started", opencode: server.url, projectId: flags.project });
-      while (!signal.aborted) {
-        const result = await runner.reconcile(flags.project);
-        if (result.updated || result.notified || result.unknown) print(result);
-        await Bun.sleep(flags.interval);
+      const runner = new OpenCodeScheduler(controlPlane, new OpenCodeSdkRuntime(server.url), settings.rootDirectory);
+      try {
+        print({ status: "started", opencode: server.url, projectId: settings.projectId, database: settings.database, rootDirectory: settings.rootDirectory, secured: Boolean(Bun.env.OPENCODE_SERVER_PASSWORD) });
+        while (!signal.aborted) {
+          const result = await runner.reconcile(settings.projectId);
+          if (result.updated || result.notified || result.unknown) print(result);
+          await Bun.sleep(flags.interval);
+        }
+      } finally {
+        server.close();
       }
     } finally {
-      store?.close();
-      server.close();
+      store.close();
     }
   },
 });

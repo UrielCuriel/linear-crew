@@ -27,7 +27,11 @@ export class OpenCodeSdkRuntime implements AgentRuntime {
   readonly #client: ReturnType<typeof createOpencodeClient>;
 
   constructor(baseUrl: string) {
-    this.#client = createOpencodeClient({ baseUrl });
+    const password = Bun.env.OPENCODE_SERVER_PASSWORD;
+    const username = Bun.env.OPENCODE_SERVER_USERNAME ?? "opencode";
+    const credentials = password ? new TextEncoder().encode(`${username}:${password}`) : undefined;
+    const authorization = credentials ? `Basic ${btoa(Array.from(credentials, (byte) => String.fromCharCode(byte)).join(""))}` : undefined;
+    this.#client = createOpencodeClient({ baseUrl, headers: authorization ? { authorization } : undefined });
   }
 
   async create(input: { directory: string; title: string; agent: string; model?: Role["model"]; metadata: Record<string, unknown> }): Promise<RuntimeSession> {
@@ -132,7 +136,7 @@ export class OpenCodeScheduler {
       .flatMap((project) => this.controlPlane.listSessions(project.id))
       .find((candidate) => candidate.id === sessionId);
     if (!session?.runtimeSessionId || !session.workspaceId) throw new DomainError("CONFLICT", "Target session has no routable OpenCode binding");
-    if (session.status === "unknown" || session.status === "completed" || session.status === "failed") {
+    if (session.status === "completed" || session.status === "failed") {
       throw new DomainError("CONFLICT", `Target session cannot be notified while ${session.status}`);
     }
     const workspace = this.controlPlane.getWorkspace(session.workspaceId);
@@ -227,7 +231,7 @@ export class OpenCodeScheduler {
   async reconcile(projectId: string): Promise<{ updated: number; notified: number; unknown: number }> {
     const sessions = this.controlPlane.listSessions(projectId).filter((session) => session.runtimeSessionId && session.workspaceId && ["active", "waiting", "unknown"].includes(session.status));
     const workspaces = new Map(this.controlPlane.listWorkspaces(projectId).map((workspace) => [workspace.id, workspace]));
-    const statusByWorkspace = new Map<string, Record<string, "idle" | "busy" | "retry">>();
+    const statusByWorkspace = new Map<string, Record<string, "idle" | "busy" | "retry"> | null>();
     let updated = 0;
     let notified = 0;
     let unknown = 0;
@@ -237,16 +241,21 @@ export class OpenCodeScheduler {
       if (!workspace) continue;
       const directory = resolveDirectory(this.rootDirectory, workspace.path);
       let statuses = statusByWorkspace.get(workspace.id);
-      if (!statuses) {
+      if (!statusByWorkspace.has(workspace.id)) {
         try {
           statuses = await this.runtime.statuses(directory);
+          statusByWorkspace.set(workspace.id, statuses);
         } catch {
-          statuses = {};
+          statuses = null;
+          statusByWorkspace.set(workspace.id, null);
         }
-        statusByWorkspace.set(workspace.id, statuses);
       }
-      const runtimeStatus = statuses[session.runtimeSessionId!];
-      const next = runtimeStatus === "busy" || runtimeStatus === "retry" ? "active" : runtimeStatus === "idle" ? "waiting" : "unknown";
+      const runtimeStatus = statuses?.[session.runtimeSessionId!];
+      const next = statuses == null
+        ? "unknown"
+        : runtimeStatus === "busy" || runtimeStatus === "retry"
+          ? "active"
+          : "waiting";
       if (next === "unknown") unknown++;
       const wasActive = session.status === "active";
       if (session.status !== next) {
